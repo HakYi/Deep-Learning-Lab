@@ -37,9 +37,10 @@ class Options:
     minibatch_size  = 32
     n_minibatches   = 500
     valid_size      = 500
-    eval_nepisodes  = 10
+    eval_nepisodes  = 50
     checkpoint_dir = '\\tmp\\tensorflow\\NeuralPlanner\\checkpoints'
-    checkpoint_prefix = os.path.join(checkpoint_dir, 'ckpt')
+    checkpoint_dir_save = '\\tmp\\tensorflow\\NeuralPlanner\\checkpoints\\save'
+    num_epochs = 10
     # network params
     num_filt1=32
     kernel_size1=5

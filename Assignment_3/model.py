@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# In[3]:
+# In[1]:
 
 
 from __future__ import absolute_import
@@ -15,9 +15,10 @@ import time
 import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.eager as tfe
+tfe.enable_eager_execution()
 
 
-# In[4]:
+# In[2]:
 
 
 class ConvNet(tfe.Network):
@@ -33,6 +34,10 @@ class ConvNet(tfe.Network):
         self.dense1 = self.track_layer(tf.layers.Dense(units=dense_units, activation=tf.nn.relu))
         self.dropoutlayer = self.track_layer(tf.layers.Dropout(rate=dropout_rate))
         self.logits = self.track_layer(tf.layers.Dense(units=logits_units))
+        
+        ds = tf.data.Dataset.from_tensor_slices((np.zeros((1,2500),dtype=np.float32),np.zeros((1,5),np.int32)))
+        for (image,label) in tfe.Iterator(ds):
+            self.predict(image,training=False)
     
     def predict(self, inputs, training):
         """Actually runs the model."""
@@ -89,7 +94,7 @@ class ConvNet(tfe.Network):
             avg_loss(self.loss(predictions, labels))
             accuracy(tf.argmax(labels, axis=1, output_type=tf.int64),tf.argmax(predictions, axis=1, output_type=tf.int64))
             break
-        print('Validation set: Average loss: %.4f, Accuracy: %4f%%\n' % (avg_loss.result(), 100 * accuracy.result()))
+        print('Validation set: Average loss: %.4f, Accuracy: %.2f%%\n' % (avg_loss.result(), 100 * accuracy.result()))
         with tf.contrib.summary.always_record_summaries():
             tf.contrib.summary.scalar('loss', avg_loss.result())
             tf.contrib.summary.scalar('accuracy', accuracy.result())
@@ -122,7 +127,11 @@ class ConvNet(tfe.Network):
         tf.gfile.MakeDirs(out_dir)
         summary_writer = tf.contrib.summary.create_file_writer(train_dir,flush_millis=10000)
         test_summary_writer = tf.contrib.summary.create_file_writer(test_dir,flush_millis=10000,name='test')
+        dir_copy = checkpoint_dir
+        checkpoint_dir = os.path.join(dir_copy,'train')
+        checkpoint_dir_save = os.path.join(dir_copy,'save')
         checkpoint_prefix = os.path.join(checkpoint_dir, 'ckpt')
+        checkpoint_prefix_save = os.path.join(checkpoint_dir_save, 'ckpt')
         
         # store data attributed to learning curve 
         training_accuracy = np.zeros(num_epochs)
@@ -150,6 +159,7 @@ class ConvNet(tfe.Network):
                 with test_summary_writer.as_default():
                     self.test(valid_ds)
                 all_variables = (self.variables + optimizer.variables() + [global_step])
-                model_saver = tfe.Saver(all_variables).save(checkpoint_prefix, global_step=global_step)
-        return training_accuracy,training_loss,valid_accuracy,valid_loss,checkpoint_prefix
+                tfe.Saver(all_variables).save(checkpoint_prefix, global_step=global_step)
+                tfe.Saver(self.variables).save(checkpoint_prefix_save, global_step=global_step)
+        return training_accuracy,training_loss,valid_accuracy,valid_loss
 
