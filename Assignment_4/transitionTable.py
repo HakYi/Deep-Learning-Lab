@@ -36,7 +36,7 @@ class TransitionTable:
         self.top = (self.top + 1) % self.max_transitions
 
     def one_hot_action(self, actions):
-        actions = np.atleast_2d(actions)
+        actions = np.atleast_1d(actions)
         one_hot_actions = np.zeros((actions.shape[0], self.act_num))
         for i in range(len(actions)):
             one_hot_actions[i, int(actions[i])] = 1

@@ -10,7 +10,7 @@ class Options:
     network_fil = "network.json"
     weights_fil = "network.h5"
     # simulator config
-    disp_interval = .005
+    disp_interval = .015
     if map_ind == 0:
         cub_siz = 5
         pob_siz = 5 # for partial observation
@@ -31,10 +31,20 @@ class Options:
         tgt_x = None
     act_num = 5
 
-    # traing hyper params    
+    # training hyper params    
     hist_len = 4
     minibatch_size  = 32
     eval_nepisodes  = 10
+    checkpoint_dir = '\\tmp\\tensorflow\\DQN\\checkpoints'
+    # network params
+    num_filt1=64
+    kernel_size1=3
+    num_filt2=64
+    kernel_size2=3
+    pool_size=2
+    dense_units=128
+    dropout_rate=0.5
+    learning_rate = 2e-04
 
 class State: # return tuples made easy
     def __init__(self, action, reward, screen, terminal, pob):

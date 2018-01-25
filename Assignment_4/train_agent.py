@@ -1,53 +1,18 @@
 import numpy as np
-import matplotlib
-matplotlib.use('TkAgg')
+#import matplotlib
+#matplotlib.use('TkAgg')
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from random import randrange
+import time
+import os
+plt.close('all')
 
 # custom modules
 from utils     import Options, rgb2gray
 from simulator import Simulator
 from transitionTable import TransitionTable
-
-
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# NOTE:
-# this is a little helper function that calculates the Q error for you
-# so that you can easily use it in tensorflow as the loss
-# you can copy this into your agent class or use it from here
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-def Q_loss(Q_s, action_onehot, Q_s_next, best_action_next, reward, terminal, discount=0.99):
-    """
-    All inputs should be tensorflow variables!
-    We use the following notation:
-       N : minibatch size
-       A : number of actions
-    Required inputs:
-       Q_s: a NxA matrix containing the Q values for each action in the sampled states.
-            This should be the output of your neural network.
-            We assume that the network implements a function from the state and outputs the 
-            Q value for each action, each output thus is Q(s,a) for one action 
-            (this is easier to implement than adding the action as an additional input to your network)
-       action_onehot: a NxA matrix with the one_hot encoded action that was selected in the state
-                      (e.g. each row contains only one 1)
-       Q_s_next: a NxA matrix containing the Q values for the next states.
-       best_action_next: a NxA matrix with the best current action for the next state
-       reward: a Nx1 matrix containing the reward for the transition
-       terminal: a Nx1 matrix indicating whether the next state was a terminal state
-       discount: the discount factor
-    """
-    # calculate: reward + discount * Q(s', a*),
-    # where a* = arg max_a Q(s', a) is the best action for s' (the next state)
-    target_q = (1. - terminal) * discount * tf.reduce_sum(best_action_next * Q_s_next, 1, keep_dims=True) + reward
-    # NOTE: we insert a stop_gradient() operation since we don't want to change Q_s_next, we only
-    #       use it as the target for Q_s
-    target_q = tf.stop_gradient(target_q)
-    # calculate: Q(s, a) where a is simply the action taken to get from s to s'
-    selected_q = tf.reduce_sum(action_onehot * Q_s, 1, keep_dims=True)
-    loss = tf.reduce_sum(tf.square(target_q - selected_q))    
-    return loss
+from network import ConvNet
 
 def append_to_hist(state, obs):
     """
@@ -57,17 +22,14 @@ def append_to_hist(state, obs):
         state[i, :] = state[i+1, :]
     state[-1, :] = obs
 
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# NOTE:
-# In contrast to your last exercise you DO NOT generate data before training.
-# Instead, the TransitionTable is build up while you are training to make sure
-# that you get some data that corresponds roughly to the current policy
-# of your agent
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
 # 0. initialization
 opt = Options()
 sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
+Q_Network = ConvNet(opt.cub_siz,opt.pob_siz,opt.hist_len,opt.act_num,opt.num_filt1,opt.kernel_size1,opt.num_filt2,opt.kernel_size2,
+                 opt.pool_size,opt.dense_units,opt.dropout_rate,opt.learning_rate)
+sess = tf.Session()
+# Run the initializer
+sess.run(Q_Network.init)
 # setup a large transitiontable that is filled during training
 maxlen = 100000
 trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
@@ -76,58 +38,68 @@ trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
 if opt.disp_on:
     win_all = None
     win_pob = None
-
-
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# NOTE:
-# You should prepare your network training here. I suggest to put this into a
-# class by itself but in general what you want to do is roughly the following
-#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-"""
-# setup placeholders for states (x) actions (u) and rewards and terminal values
-x = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.hist_len*opt.state_siz))
-u = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
-ustar = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.act_num))
-xn = tf.placeholder(tf.float32, shape=(opt.minibatch_size, opt.hist_len*opt.state_siz))
-r = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
-term = tf.placeholder(tf.float32, shape=(opt.minibatch_size, 1))
-
-# get the output from your network
-Q = my_network_forward_pass(x)
-Qn =  my_network_forward_pass(xn)
-
-# calculate the loss
-loss = Q_loss(Q, u, Qn, ustar, r, term)
-
-# setup an optimizer in tensorflow to minimize the loss
-"""
     
 # lets assume we will train for a total of 1 million steps
 # this is just an example and you might want to change it
-steps = 1 * 10**6
+steps = int(1e5)
 epi_step = 0
 nepisodes = 0
+
+epsilon = 0.2
+
+show_image = False
+show_image_interval = [20,5] #every 20th episode, show 5 episodes
+show_image_count = show_image_interval[0]
+numbers_games_in_bins = 10
+step_num_vec_temp = np.array([])
+step_num_vec = []
+time_stamp_vec = []
+loss_vec = []
+loss_stamp_vec = []
+
+step_num_count = 0
+start_time = time.time()
 
 state = sim.newGame(opt.tgt_y, opt.tgt_x)
 state_with_history = np.zeros((opt.hist_len, opt.state_siz))
 append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
 next_state_with_history = np.copy(state_with_history)
-for step in xrange(steps):
+for step in range(steps):
     if state.terminal or epi_step >= opt.early_stop:
+        step_num_vec_temp= np.append(step_num_vec_temp,epi_step)
         epi_step = 0
         nepisodes += 1
+        print('Episode:',nepisodes)
         # reset the game
         state = sim.newGame(opt.tgt_y, opt.tgt_x)
         # and reset the history
         state_with_history[:] = 0
         append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
         next_state_with_history = np.copy(state_with_history)
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # TODO: here you would let your agent take its action
-    #       remember
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # this just gets a random action
-    action = randrange(opt.act_num)
+        # check if image should be shown or not
+        if nepisodes == show_image_count:
+            show_image = not(show_image)
+            if show_image:
+                show_image_count += show_image_interval[1]
+            else:
+                show_image_count += show_image_interval[0]
+        # check if it's time to update our step numbers
+        if len(step_num_vec_temp) == numbers_games_in_bins:
+            average_steps = np.mean(step_num_vec_temp)
+            time_stamp = (time.time()-start_time)/60.
+            step_num_vec.append(average_steps)
+            time_stamp_vec.append(time_stamp)
+            step_num_vec_temp = np.array([])
+            print('Numbers of agent steps:',step_num_vec)
+    epi_step += 1
+    #epsilon = epsilon*0.9999    
+    # agent takes its action
+    actions = sess.run(Q_Network.Q, feed_dict={Q_Network.x:state_with_history.reshape((1,opt.hist_len*opt.state_siz)),Q_Network.keep_prob:1.})
+    action = np.argmax(actions)
+    #if action == 0:
+     #   action = np.argmax(actions[:,1:])+1
+    if np.random.rand() <= epsilon:
+        action = randrange(opt.act_num) # this just gets a random action
     action_onehot = trans.one_hot_action(action)
     next_state = sim.step(action)
     # append to history
@@ -137,24 +109,31 @@ for step in xrange(steps):
     # mark next state as current state
     state_with_history = np.copy(next_state_with_history)
     state = next_state
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # TODO: here you would train your agent
-    #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    # train agent
     state_batch, action_batch, next_state_batch, reward_batch, terminal_batch = trans.sample_minibatch()
-    # TODO train me here
-    # this should proceed as follows:
     # 1) pre-define variables and networks as outlined above
     # 1) here: calculate best action for next_state_batch
-    # TODO:
-    # action_batch_next = CALCULATE_ME
     # 2) with that action make an update to the q values
     #    as an example this is how you could print the loss 
     #print(sess.run(loss, feed_dict = {x : state_batch, u : action_batch, ustar : action_batch_next, xn : next_state_batch, r : reward_batch, term : terminal_batch}))
-
+    action_batch_next = sess.run(Q_Network.Qn, feed_dict={Q_Network.xn:next_state_batch,Q_Network.keep_prob:1.})
+    action_batch_next = trans.one_hot_action(np.argmax(action_batch_next,1))
+    sess.run(Q_Network.train_op, feed_dict={Q_Network.x:state_batch,Q_Network.u:action_batch,\
+                                            Q_Network.xn:next_state_batch,Q_Network.ustar:action_batch_next,\
+                                            Q_Network.r:reward_batch,Q_Network.term:terminal_batch,\
+                                            Q_Network.keep_prob:Q_Network.dropout_rate})
+    if step % 50 == 0:
+        loss = sess.run(Q_Network.loss_op, feed_dict={Q_Network.x:state_batch,Q_Network.u:action_batch,\
+                                            Q_Network.xn:next_state_batch,Q_Network.ustar:action_batch_next,\
+                                            Q_Network.r:reward_batch,Q_Network.term:terminal_batch,\
+                                            Q_Network.keep_prob:1.})
+        print('Loss at step '+str(step)+':', loss, show_image)
+        loss_vec.append(loss)
+        loss_stamp_vec.append(step)
     
-    # TODO every once in a while you should test your agent here so that you can track its performance
-
-    if opt.disp_on:
+    # every once in a while test agent here so that one can track its performance
+    if show_image:
         if win_all is None:
             plt.subplot(121)
             win_all = plt.imshow(state.screen)
@@ -168,5 +147,19 @@ for step in xrange(steps):
 
 
 # 2. perform a final test of your model and save it
-# TODO
+save_path = 'checkpoints/'
+saver = tf.train.Saver()
+if not os.path.exists(save_path):
+    os.makedirs(save_path)
+save_path = saver.save(sess, os.path.join(save_path,'DQN_Network'))
 
+# Loss function
+plt.figure()
+plt.plot(loss_stamp_vec,loss_vec)
+plt.xlabel('Simulation step')
+plt.ylabel('Loss')
+
+plt.figure()
+plt.plot(time_stamp_vec,step_num_vec)
+plt.xlabel('Time (min)')
+plt.ylabel('Average number of agent steps for one episode')
