@@ -7,13 +7,14 @@ from random import randrange
 import tensorflow as tf
 from collections import namedtuple
 import argparse
+import os
 
 # custom modules
 from utils     import Options, rgb2gray
 from simulator import Simulator
 from transitionTable import TransitionTable
 
-Statistics = namedtuple("Stats",["loss", "tests"])
+Statistics = namedtuple("Stats",["loss", "val_success", "tests"])
 
 # Parse arguments from the command line
 parser = argparse.ArgumentParser(description='Uses DQN to navigate a maze.')
@@ -26,6 +27,9 @@ parser.add_argument('-filter_size' , help="set filter size (default 2)")
 parser.add_argument('-pool_size' , help="set pool size (default 2)")
 parser.add_argument('-episodes' , help="set number of episodes (default 3000)")
 parser.add_argument('-lr' , help="set learning rate (default 0.0005)")
+parser.add_argument('-gpu' , help="Use GPU (default False)")
+parser.add_argument('-path' , help="output path for plots (default .)")
+parser.add_argument('-plt_show' , help="show plots or not (default False)")
 args = parser.parse_args()
 
 # Set parameters from command line or default
@@ -39,6 +43,14 @@ FILTER_SIZE = args.filter_size if args.filter_size != None else 2
 POOL_SIZE = args.pool_size if args.pool_size != None else 2
 EPISODES = args.episodes if args.episodes != None else 3 * 10 ** 3
 LEARNING_RATE = args.lr if args.lr != None else 5e-4
+GPU = args.gpu if args.gpu != None else False
+PATH = args.path
+PLT_SHOW = args.plt_show if args.plt_show != None else False
+
+if GPU:
+    device = "/gpu:0"
+else:
+    device = "/cpu:0"
 
 def schedule(epsilon, step, max_steps):
     if step != 0:
@@ -56,77 +68,78 @@ class Agent:
 
     "Build the model"
     def build_model(self, opt):
-        self.x = tf.placeholder(tf.float32, shape=[None, opt.state_siz, opt.hist_len, 1])
+        with tf.device(device):
+            self.x = tf.placeholder(tf.float32, shape=[None, opt.state_siz, opt.hist_len, 1])
 
-        # Placeholders for loss
-        self.targets = tf.placeholder(tf.float32, shape = [None])
-        self.action_onehot = tf.placeholder(tf.float32, shape=[None, opt.act_num])
-        self.normalized_is_weights = tf.placeholder(tf.float32, shape=[None])
+            # Placeholders for loss
+            self.targets = tf.placeholder(tf.float32, shape = [None])
+            self.action_onehot = tf.placeholder(tf.float32, shape=[None, opt.act_num])
+            self.normalized_is_weights = tf.placeholder(tf.float32, shape=[None])
 
-        # L2 Regularizer
-        self.l2 = tf.contrib.layers.l2_regularizer(scale=0.1)
+            # L2 Regularizer
+            self.l2 = tf.contrib.layers.l2_regularizer(scale=0.1)
 
-        # Convolutional layers (padded to size)
-        self.conv1 = tf.contrib.layers.conv2d(self.x, FILTERS, FILTER_SIZE)
-        self.conv2 = tf.contrib.layers.conv2d(self.conv1, FILTERS, FILTER_SIZE)
-        self.pool1 = tf.contrib.layers.max_pool2d(self.conv2, POOL_SIZE)
+            # Convolutional layers (padded to size)
+            self.conv1 = tf.contrib.layers.conv2d(self.x, FILTERS, FILTER_SIZE)
+            self.conv2 = tf.contrib.layers.conv2d(self.conv1, FILTERS, FILTER_SIZE)
+            self.pool1 = tf.contrib.layers.max_pool2d(self.conv2, POOL_SIZE)
 
-        # Flatten before hidden layers
-        self.flatten = tf.contrib.layers.flatten(self.pool1)
+            # Flatten before hidden layers
+            self.flatten = tf.contrib.layers.flatten(self.pool1)
 
-        # Hidden layers
-        #TODO: This is super clunky... Can we make it prettier?
-        if NOISY == True:
-            # Noisy layers: y = Wx + b + (W_noise \times \eps_w)x + b_noise \times \eps_b
-            self.w1 = tf.get_variable('weights_hidden1', shape=[self.flatten.shape[1], UNITS])
-            self.b1 = tf.get_variable('bias_hidden1', shape=[UNITS])
+            # Hidden layers
+            #TODO: This is super clunky... Can we make it prettier?
+            if NOISY == True:
+                # Noisy layers: y = Wx + b + (W_noise \times \eps_w)x + b_noise \times \eps_b
+                self.w1 = tf.get_variable('weights_hidden1', shape=[self.flatten.shape[1], UNITS])
+                self.b1 = tf.get_variable('bias_hidden1', shape=[UNITS])
 
-            self.noise_w1 = tf.get_variable('noise_weights_hidden1', shape=[self.flatten.shape[1], UNITS])
-            self.noise_b1 = tf.get_variable('noise_bias_hidden1', shape=[UNITS])
+                self.noise_w1 = tf.get_variable('noise_weights_hidden1', shape=[self.flatten.shape[1], UNITS])
+                self.noise_b1 = tf.get_variable('noise_bias_hidden1', shape=[UNITS])
 
-            # Independent Gaussian noise
-            self.eps_w1 = tf.random_normal(self.w1.shape, 0., 0.5)
-            self.eps_b1 = tf.random_normal([UNITS], 0, 0.5)
+                # Independent Gaussian noise
+                self.eps_w1 = tf.random_normal(self.w1.shape, 0., 0.5)
+                self.eps_b1 = tf.random_normal([UNITS], 0, 0.5)
 
-            self.hidden1 = tf.nn.relu(tf.matmul(self.flatten, self.w1) + self.b1 + tf.matmul(self.flatten, np.multiply(self.noise_w1, self.eps_w1)) + np.multiply(self.noise_b1, self.eps_b1))
+                self.hidden1 = tf.nn.relu(tf.matmul(self.flatten, self.w1) + self.b1 + tf.matmul(self.flatten, np.multiply(self.noise_w1, self.eps_w1)) + np.multiply(self.noise_b1, self.eps_b1))
 
-            self.dropout1 = tf.contrib.layers.dropout(self.hidden1)
+                self.dropout1 = tf.contrib.layers.dropout(self.hidden1)
 
-            self.w2 = tf.get_variable('weights_hidden2', shape=[self.dropout1.shape[1], UNITS])
-            self.b2 = tf.get_variable('bias_hidden2', shape=[UNITS])
+                self.w2 = tf.get_variable('weights_hidden2', shape=[self.dropout1.shape[1], UNITS])
+                self.b2 = tf.get_variable('bias_hidden2', shape=[UNITS])
 
-            self.noise_w2 = tf.get_variable('noise_weights_hidden2', shape=[self.dropout1.shape[1], UNITS])
-            self.noise_b2 = tf.get_variable('noise_bias_hidden2', shape=[UNITS])
+                self.noise_w2 = tf.get_variable('noise_weights_hidden2', shape=[self.dropout1.shape[1], UNITS])
+                self.noise_b2 = tf.get_variable('noise_bias_hidden2', shape=[UNITS])
 
-            # Independent Gaussian noise
-            self.eps_w2 = tf.random_normal(self.w2.shape, 0., 0.5)
-            self.eps_b2 = tf.random_normal([UNITS], 0, 0.5)
+                # Independent Gaussian noise
+                self.eps_w2 = tf.random_normal(self.w2.shape, 0., 0.5)
+                self.eps_b2 = tf.random_normal([UNITS], 0, 0.5)
 
-            self.hidden2 = tf.nn.relu(tf.matmul(self.dropout1, self.w2) + self.b2 + tf.matmul(self.dropout1, np.multiply(self.noise_w2, self.eps_w2)) + np.multiply(self.noise_b2, self.eps_b2))
+                self.hidden2 = tf.nn.relu(tf.matmul(self.dropout1, self.w2) + self.b2 + tf.matmul(self.dropout1, np.multiply(self.noise_w2, self.eps_w2)) + np.multiply(self.noise_b2, self.eps_b2))
 
-            self.dropout2 = tf.contrib.layers.dropout(self.hidden2)
+                self.dropout2 = tf.contrib.layers.dropout(self.hidden2)
 
-        else:
-            self.hidden1 = tf.contrib.layers.fully_connected(self.flatten, UNITS, weights_regularizer=self.l2, activation_fn=tf.nn.relu)
-            self.dropout1 = tf.contrib.layers.dropout(self.hidden1)
-            self.hidden2 = tf.contrib.layers.fully_connected(self.dropout1, UNITS, weights_regularizer=self.l2, activation_fn=tf.nn.relu)
-            self.dropout2 = tf.contrib.layers.dropout(self.hidden2)
+            else:
+                self.hidden1 = tf.contrib.layers.fully_connected(self.flatten, UNITS, weights_regularizer=self.l2, activation_fn=tf.nn.relu)
+                self.dropout1 = tf.contrib.layers.dropout(self.hidden1)
+                self.hidden2 = tf.contrib.layers.fully_connected(self.dropout1, UNITS, weights_regularizer=self.l2, activation_fn=tf.nn.relu)
+                self.dropout2 = tf.contrib.layers.dropout(self.hidden2)
 
-        # Linear output
-        self.out = tf.contrib.layers.fully_connected(self.dropout2, opt.act_num, activation_fn=None)
+            # Linear output
+            self.out = tf.contrib.layers.fully_connected(self.dropout2, opt.act_num, activation_fn=None)
 
-        selected_q = tf.reduce_sum(self.action_onehot * self.out, 1)
+            selected_q = tf.reduce_sum(self.action_onehot * self.out, 1)
 
-        # We need to factor in the importance sampling weights here to avoid a sampling bias
-        # The weight for a transition i is w_i = 1/(N*P(i))^\beta with P(i) being the priority of i
-        # Source: Schaul, Quan, Antonoglou, Silver - Prioritized Experience Replay (2016)
-        self.tds = self.targets - selected_q
-        self.loss = tf.reduce_mean(np.square(np.multiply(self.normalized_is_weights, self.tds)))
+            # We need to factor in the importance sampling weights here to avoid a sampling bias
+            # The weight for a transition i is w_i = 1/(N*P(i))^\beta with P(i) being the priority of i
+            # Source: Schaul, Quan, Antonoglou, Silver - Prioritized Experience Replay (2016)
+            self.tds = self.targets - selected_q
+            self.loss = tf.reduce_mean(np.square(np.multiply(self.normalized_is_weights, self.tds)))
 
-        #Adam optimizer
-        self.train_step = tf.train.AdamOptimizer(LEARNING_RATE).minimize(self.loss)
+            #Adam optimizer
+            self.train_step = tf.train.AdamOptimizer(LEARNING_RATE).minimize(self.loss)
 
-        pass
+            pass
 
     def predict(self, sess, states):
         """
@@ -188,17 +201,37 @@ def plot_stats(stats):
     plt.xlabel("Timestep")
     plt.ylabel("Loss")
     plt.title("Loss per step")
-    fig1.savefig('loss.png')
-    plt.show(fig1)
+
+    # Plot successes in in-between tests
+    fig2 = plt.figure(figsize=(10,10))
+    plt.plot(stats.val_success)
+    plt.xlabel("Validation Intervall")
+    plt.ylabel("Success (yes/no)")
+    plt.title("Successes in intermediate testing")
 
     # Plot test steps
-    fig1 = plt.figure(figsize=(10,10))
-    plt.plot(stats.loss)
+    fig3 = plt.figure(figsize=(10,10))
+    plt.plot(stats.tests)
     plt.xlabel("Test Number")
     plt.ylabel("Steps used")
     plt.title("Steps per test")
-    fig1.savefig('steps.png')
-    plt.show(fig1)
+
+    if PATH != None:
+        if not os.path.exists(PATH):
+            os.makedirs(PATH)
+
+        fig1.savefig(PATH + "/loss.png")
+        fig2.savefig(PATH + "/inter_tests.png")
+        fig3.savefig(PATH + "/test_steps.png")
+    else:
+        fig1.savefig('loss.png')
+        fig1.savefig('inter_tests.png')
+        fig1.savefig('test_steps.png')
+
+    if PLT_SHOW:
+        plt.show(fig1)
+        plt.show(fig2)
+        plt.show(fig3)
 
 # 0. initialization
 opt = Options()
@@ -221,10 +254,10 @@ if opt.disp_on:
 
 # lets assume we will train for a total of 1 million steps
 # this is just an example and you might want to change it
-steps = EPISODES
+steps = int(EPISODES)
 epi_step = 0
 nepisodes = 0
-stats = Statistics(loss = np.zeros(steps), tests = np.ones(steps // 250)*100)
+stats = Statistics(loss = np.zeros(steps), val_success = np.zeros(steps //250), tests = np.ones(500)*100)
 epsilon = EPSILON
 
 state = sim.newGame(opt.tgt_y, opt.tgt_x)
@@ -294,7 +327,7 @@ for step in range(steps):
         for i in range(100):
             # check if episode ended
             if state.terminal == True:
-                stats.tests[step // 250] = i
+                stats.val_success[step // 250] = 1
                 break
             else:
                 #test run
@@ -353,6 +386,7 @@ for step in range(500):
 
     # Check if episode ended and if yes start new game
     if state.terminal or epi_step >= opt.early_stop:
+        stats.tests[step] = epi_step
         epi_step = 0
         nepisodes += 1
         if state.terminal:
