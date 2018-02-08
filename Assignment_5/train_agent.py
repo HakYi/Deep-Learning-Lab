@@ -34,7 +34,6 @@ args = parser.parse_args()
 
 # Set parameters from command line or default
 DISCOUNT_FACTOR = args.d if args.d != None else 0.9
-EPSILON = args.eps if args.eps != None else 0.9
 NOISY = args.noise if args.noise != None else True
 UNITS = args.units if args.units != None else 128
 FILTERS = args.filters if args.filters != None else 64
@@ -50,12 +49,6 @@ if GPU:
     device = "/gpu:0"
 else:
     device = "/cpu:0"
-
-def schedule(epsilon, step, max_steps):
-    if step != 0:
-        return epsilon * (1 - step/max_steps) ** 2
-    else:
-        return epsilon
 
 class Agent:
     "Neural Network agent in tensorflow"
@@ -259,16 +252,24 @@ steps = int(EPISODES)
 epi_step = 0
 nepisodes = 0
 stats = Statistics(loss = np.zeros(steps), val_success = np.zeros(steps //250), tests = np.ones(500)*100)
-epsilon = EPSILON
 
 state = sim.newGame(opt.tgt_y, opt.tgt_x)
 state_with_history = np.zeros((opt.hist_len, opt.state_siz))
 append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
 next_state_with_history = np.copy(state_with_history)
-n_step_return = 0
+n_step_return = np.zeros(opt.early_stop)
+save_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+save_next_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+save_actions = np.zeros((opt.early_stop, opt.act_num))
+save_terminals = np.zeros_like(n_step_return)
 
 for step in range(steps):
     if state.terminal or epi_step >= opt.early_stop:
+        # add to the transition table
+        for i in range(epi_step +1):
+            #sum backwards
+            trans.add(states[i], actions[i], next_states[i], n_step_return[i:].sum(), terminals[i])
+        #reset
         epi_step = 0
         nepisodes += 1
         # reset the game
@@ -277,57 +278,60 @@ for step in range(steps):
         state_with_history[:] = 0
         append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
         next_state_with_history = np.copy(state_with_history)
-        # Start with return of 0 again
-        n_step_return = 0
+        # Start with returns of 0 and empty sets
+        n_step_return = np.zeros(opt.early_stop)
+        save_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+        save_next_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+        save_actions = np.zeros((opt.early_stop, opt.act_num))
+        save_terminals = np.zeros_like(n_step_return)
 
-    # Take action epslion-greedily
-    epsilon = schedule(epsilon, step, steps)
-    best_action = np.random.choice([0, 1], p=[epsilon, 1-epsilon])
-    if best_action == True:
-        action = np.argmax(agent.predict(sess, np.reshape(state_with_history, (900, 4))[np.newaxis, ..., np.newaxis]))
-    else:
-        action = np.random.choice(opt.act_num)
+    # Take best action
+    action = np.argmax(agent.predict(sess, np.reshape(state_with_history, (900, 4))[np.newaxis, ..., np.newaxis]))
 
     action_onehot = trans.one_hot_action(action)
     next_state = sim.step(action)
     # Update reward
-    n_step_return += next_state.reward
+    n_step_return[epi_step] = next_state.reward
     # append to history
     append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
-    # add to the transition table
-    trans.add(state_with_history.reshape(-1), action_onehot, next_state_with_history.reshape(-1), n_step_return, next_state.terminal)
+    # Save transition
+    save_states[epi_step] = state_with_history.reshape(-1)
+    save_next_states[epi_step] = next_state_with_history.reshape(-1)
+    save_actions[epi_step] = action_onehot
+    save_terminals[epi_step] = next_state.terminal
     # mark next state as current state
     state_with_history = np.copy(next_state_with_history)
     state = next_state
 
-    #Training
-    #Get batch
-    batch, batch_weights = trans.sample_minibatch()
-    states = np.zeros((len(batch), 900, 4, 1))
-    targets = np.zeros(len(batch))
-    action_batch = np.zeros((len(batch), opt.act_num))
+    if trans.size >= opt.minibatch_size:
+        #Training
+        #Get batch
+        batch, batch_weights = trans.sample_minibatch()
+        states = np.zeros((len(batch), 900, 4, 1))
+        targets = np.zeros(len(batch))
+        action_batch = np.zeros((len(batch), opt.act_num))
 
-    for i in range(len(batch)):
-        # Double Q-learning to eliminate maximation bias
-        # Q(s, a) <- r + \gamma * Q_t(s', max(Q(s', a)))
-        next_state = np.reshape(batch[i].next_state, (900, 4))[np.newaxis, ..., np.newaxis]
-        targets[i] = batch[i].reward + DISCOUNT_FACTOR * target.predict(sess, next_state)[0][0][np.argmax(agent.predict(sess, next_state))] * (1. - batch[i].terminal)
+        for i in range(len(batch)):
+            # Double Q-learning to eliminate maximation bias
+            # Q(s, a) <- r + \gamma * Q_t(s', max(Q(s', a)))
+            next_state = np.reshape(batch[i].next_state, (900, 4))[np.newaxis, ..., np.newaxis]
+            targets[i] = batch[i].reward + DISCOUNT_FACTOR * target.predict(sess, next_state)[0][0][np.argmax(agent.predict(sess, next_state))] * (1. - batch[i].terminal)
 
-        # Shape & check it actions are one-hotted
-        states[i] = np.reshape(batch[i].state, (900, 4, 1))
-        if not np.array_equal([1, opt.act_num], batch[i].action.shape):
-            action_batch[i] = trans.one_hot_action(batch[i].action)
-        else:
-            action_batch[i] = batch[i].action
+            # Shape & check it actions are one-hotted
+            states[i] = np.reshape(batch[i].state, (900, 4, 1))
+            if not np.array_equal([1, opt.act_num], batch[i].action.shape):
+                action_batch[i] = trans.one_hot_action(batch[i].action)
+            else:
+                action_batch[i] = batch[i].action
 
-    # Update Target Net and Agent
-    target.update(sess)
-    loss, tds = agent.update(sess, states, targets, action_batch, batch_weights)
-    trans.update_td(batch, tds)
-    stats.loss[step] = loss
+        # Update Target Net and Agent
+        target.update(sess)
+        loss, tds = agent.update(sess, states, targets, action_batch, batch_weights)
+        trans.update_td(batch, tds)
+        stats.loss[step] = loss
 
-    # Print the loss
-    print("Loss in step {}: {}" .format(step, loss))
+        # Print the loss
+        print("Loss in step {}: {}" .format(step, loss))
 
     if step % 250 == 0:
         test_state = test_sim.newGame(opt.tgt_y, opt.tgt_x)

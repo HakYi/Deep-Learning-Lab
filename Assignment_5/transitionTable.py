@@ -77,13 +77,13 @@ class TransitionTable:
         self.transitions = sorted(self.transitions[self.bottom:self.top], key=lambda transition: -transition.td)
 
         # Sample batch
-        batch_indices = np.random.choice(len(self.transitions), batch_size, p=probabilities)
+        batch_indices = np.random.choice(self.size, batch_size, p=probabilities)
         batch = [None] * batch_size
         weight_vector = np.zeros(batch_size)
 
         # Get weights and normalize
         for i in range(batch_size):
-            batch[i] = self.transitions[batch_indices[i]]
+            batch[i] = self.transitions[batch_indices[self.bottom + i]]
             weight_vector[i] = batch[i].weight
 
         normalized_weights = 1/max(weight_vector) * weight_vector
