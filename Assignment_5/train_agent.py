@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from random import randrange
@@ -33,15 +33,14 @@ parser.add_argument('-plt_show' , help="show plots or not (default False)")
 args = parser.parse_args()
 
 # Set parameters from command line or default
-# TODO: those are bad defaults
 DISCOUNT_FACTOR = args.d if args.d != None else 0.9
 EPSILON = args.eps if args.eps != None else 0.9
 NOISY = args.noise if args.noise != None else True
 UNITS = args.units if args.units != None else 128
-FILTERS = args.filters if args.filters != None else 32
-FILTER_SIZE = args.filter_size if args.filter_size != None else 2
+FILTERS = args.filters if args.filters != None else 64
+FILTER_SIZE = args.filter_size if args.filter_size != None else 4
 POOL_SIZE = args.pool_size if args.pool_size != None else 2
-EPISODES = args.episodes if args.episodes != None else 3 * 10 ** 3
+EPISODES = args.episodes if args.episodes != None else 1 * 10 ** 5
 LEARNING_RATE = args.lr if args.lr != None else 5e-4
 GPU = args.gpu if args.gpu != None else False
 PATH = args.path
@@ -54,7 +53,7 @@ else:
 
 def schedule(epsilon, step, max_steps):
     if step != 0:
-        return epsilon * (1 - step/max_steps)
+        return epsilon * (1 - step/max_steps) ** 2
     else:
         return epsilon
 
@@ -160,11 +159,10 @@ class TargetNetwork(Agent):
     it is always set to the values of its associate.
     """
     def __init__(self, opt, tau=0.001):
-
-          self.scope = "target"
-          Agent.__init__(self, opt, self.scope)
-          self.tau = tau
-          self._associate = self._register_associate()
+        self.scope = "target"
+        Agent.__init__(self, opt, self.scope)
+        self.tau = tau
+        self._associate = self._register_associate()
 
     def _register_associate(self):
       op_holder = []
@@ -233,12 +231,17 @@ def plot_stats(stats):
         plt.show(fig2)
         plt.show(fig3)
 
+
 # 0. initialization
 opt = Options()
 sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
 test_sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
 # setup a large transitiontable that is filled during training
-maxlen = 100000
+# It will save the last third of the total number of episodes
+# This is a relatively small number and might be increased to a more complete representation of possible transitions
+# The reason it's relatively small here is that we prioritize large errors anyway and don't want to train on the same ones the whole time
+# This could be considered a hyperparameter that needs to be tuned
+maxlen = int(EPISODES) // 3
 trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
                         opt.minibatch_size, maxlen)
 agent = Agent(opt)
@@ -252,8 +255,6 @@ if opt.disp_on:
     win_all = None
     win_pob = None
 
-# lets assume we will train for a total of 1 million steps
-# this is just an example and you might want to change it
 steps = int(EPISODES)
 epi_step = 0
 nepisodes = 0
@@ -264,6 +265,8 @@ state = sim.newGame(opt.tgt_y, opt.tgt_x)
 state_with_history = np.zeros((opt.hist_len, opt.state_siz))
 append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
 next_state_with_history = np.copy(state_with_history)
+n_step_return = 0
+
 for step in range(steps):
     if state.terminal or epi_step >= opt.early_stop:
         epi_step = 0
@@ -274,6 +277,8 @@ for step in range(steps):
         state_with_history[:] = 0
         append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
         next_state_with_history = np.copy(state_with_history)
+        # Start with return of 0 again
+        n_step_return = 0
 
     # Take action epslion-greedily
     epsilon = schedule(epsilon, step, steps)
@@ -285,10 +290,12 @@ for step in range(steps):
 
     action_onehot = trans.one_hot_action(action)
     next_state = sim.step(action)
+    # Update reward
+    n_step_return += next_state.reward
     # append to history
     append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
     # add to the transition table
-    trans.add(state_with_history.reshape(-1), action_onehot, next_state_with_history.reshape(-1), next_state.reward, next_state.terminal)
+    trans.add(state_with_history.reshape(-1), action_onehot, next_state_with_history.reshape(-1), n_step_return, next_state.terminal)
     # mark next state as current state
     state_with_history = np.copy(next_state_with_history)
     state = next_state
@@ -357,7 +364,6 @@ for step in range(steps):
             win_pob.set_data(state.pob)
         plt.pause(opt.disp_interval)
         plt.draw()
-
 
 # 2. perform a final test of your model and save it
 saver = tf.train.Saver()
