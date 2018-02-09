@@ -268,7 +268,7 @@ for step in range(steps):
         # add to the transition table
         for i in range(epi_step +1):
             #sum backwards
-            trans.add(states[i], actions[i], next_states[i], n_step_return[i:].sum(), terminals[i])
+            trans.add(save_states[i], save_actions[i], save_next_states[i], n_step_return[i:].sum(), save_terminals[i])
         #reset
         epi_step = 0
         nepisodes += 1
@@ -319,7 +319,7 @@ for step in range(steps):
 
             # Shape & check it actions are one-hotted
             states[i] = np.reshape(batch[i].state, (900, 4, 1))
-            if not np.array_equal([1, opt.act_num], batch[i].action.shape):
+            if len(action.shape) > 1: #not np.array_equal([1, opt.act_num], batch[i].action.shape):
                 action_batch[i] = trans.one_hot_action(batch[i].action)
             else:
                 action_batch[i] = batch[i].action
