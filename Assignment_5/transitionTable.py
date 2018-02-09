@@ -26,7 +26,7 @@ class TransitionTable:
 
         #transition memory
         self.transitions = []
-        self.max_td = 1e-6
+        self.max_td = 1e6
         self.top = 0
         self.bottom = 0
         self.size = 0
@@ -83,7 +83,7 @@ class TransitionTable:
 
         # Get weights and normalize
         for i in range(batch_size):
-            batch[i] = self.transitions[batch_indices[self.bottom + i]]
+            batch[i] = self.transitions[self.bottom + batch_indices[i]]
             weight_vector[i] = batch[i].weight
 
         normalized_weights = 1/max(weight_vector) * weight_vector
