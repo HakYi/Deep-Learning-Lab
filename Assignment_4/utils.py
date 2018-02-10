@@ -1,4 +1,5 @@
 import numpy as np
+import os 
 
 class Options:
     #
@@ -35,16 +36,18 @@ class Options:
     hist_len = 4
     minibatch_size  = 32
     eval_nepisodes  = 10
-    checkpoint_dir = '\\tmp\\tensorflow\\DQN\\checkpoints'
+    checkpoint_dir = os.path.join(os.getcwd(),'checkpoints')
+    data_dir = os.path.join(os.getcwd(),'data')
+    #checkpoint_dir = '\\tmp\\tensorflow\\DQN\\checkpoints'
     # network params
-    num_filt1=64
-    kernel_size1=3
-    num_filt2=64
-    kernel_size2=3
+    num_filt1=16
+    kernel_size1=8
+    num_filt2=32
+    kernel_size2=4
     pool_size=2
-    dense_units=128
+    dense_units=256
     dropout_rate=0.5
-    learning_rate = 2e-04
+    learning_rate = 1e-03
 
 class State: # return tuples made easy
     def __init__(self, action, reward, screen, terminal, pob):
