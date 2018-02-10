@@ -234,7 +234,7 @@ test_sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
 # This is a relatively small number and might be increased to a more complete representation of possible transitions
 # The reason it's relatively small here is that we prioritize large errors anyway and don't want to train on the same ones the whole time
 # This could be considered a hyperparameter that needs to be tuned
-maxlen = int(EPISODES) // 3
+maxlen = int(EPISODES)
 trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
                         opt.minibatch_size, maxlen)
 agent = Agent(opt)
@@ -287,7 +287,6 @@ for step in range(steps):
 
     # Take best action
     action = np.argmax(agent.predict(sess, np.reshape(state_with_history, (900, 4))[np.newaxis, ..., np.newaxis]))
-
     action_onehot = trans.one_hot_action(action)
     next_state = sim.step(action)
     # Update reward
@@ -302,6 +301,7 @@ for step in range(steps):
     # mark next state as current state
     state_with_history = np.copy(next_state_with_history)
     state = next_state
+    epi_step += 1
 
     if trans.size >= opt.minibatch_size:
         #Training

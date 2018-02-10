@@ -83,7 +83,11 @@ class TransitionTable:
 
         # Get weights and normalize
         for i in range(batch_size):
-            batch[i] = self.transitions[self.bottom + batch_indices[i]]
+            if self.bottom + batch_indices[i] > self.top:
+                print("Index {} is too big for size {}. Highest index will be used." .format(self.bottom + batch_indices[i], self.top))
+                batch[i] = self.transitions[self.top]
+            else:
+                batch[i] = self.transitions[self.bottom + batch_indices[i]]
             weight_vector[i] = batch[i].weight
 
         normalized_weights = 1/max(weight_vector) * weight_vector
