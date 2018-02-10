@@ -45,7 +45,7 @@ GPU = args.gpu if args.gpu != None else False
 PATH = args.path
 PLT_SHOW = args.plt_show if args.plt_show != None else False
 
-if GPU:
+if GPU == True:
     device = "/gpu:0"
 else:
     device = "/cpu:0"
@@ -268,7 +268,7 @@ for step in range(steps):
         # add to the transition table
         for i in range(epi_step +1):
             #sum backwards
-            trans.add(save_states[i], save_actions[i], save_next_states[i], n_step_return[i:].sum(), save_terminals[i])
+            trans.add(save_states[i], save_actions[i], save_next_states[i], n_step_return[i:i+3].sum(), save_terminals[i])
         #reset
         epi_step = 0
         nepisodes += 1
