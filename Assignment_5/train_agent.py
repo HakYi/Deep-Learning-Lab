@@ -19,6 +19,7 @@ Statistics = namedtuple("Stats",["loss", "val_success", "tests"])
 # Parse arguments from the command line
 parser = argparse.ArgumentParser(description='Uses DQN to navigate a maze.')
 parser.add_argument('-d' , help="set discount factor (default = 0.9)")
+parser.add_argument('-n' , help="set n for multi-step learning (default = 3)")
 parser.add_argument('-eps' , help="set starting epsilon (default = 0.9)")
 parser.add_argument('-noise' , help="use noisy nets (default True)")
 parser.add_argument('-units' , help="set number of units per layer (default 128)")
@@ -33,14 +34,16 @@ parser.add_argument('-plt_show' , help="show plots or not (default False)")
 args = parser.parse_args()
 
 # Set parameters from command line or default
-DISCOUNT_FACTOR = args.d if args.d != None else 0.9
+DISCOUNT_FACTOR = int(args.d) if args.d != None else 0.9
 NOISY = args.noise if args.noise != None else True
-UNITS = args.units if args.units != None else 128
-FILTERS = args.filters if args.filters != None else 64
-FILTER_SIZE = args.filter_size if args.filter_size != None else 4
-POOL_SIZE = args.pool_size if args.pool_size != None else 2
-EPISODES = args.episodes if args.episodes != None else 1 * 10 ** 5
-LEARNING_RATE = args.lr if args.lr != None else 5e-4
+EPSILON = float(args.eps) if args.eps != None else 0.9
+MSRN = int(args.n) if args.n != None else 3
+UNITS = int(args.units) if args.units != None else 128
+FILTERS = int(args.filters) if args.filters != None else 64
+FILTER_SIZE = int(args.filter_size) if args.filter_size != None else 4
+POOL_SIZE = int(args.pool_size) if args.pool_size != None else 2
+EPISODES = int(args.episodes) if args.episodes != None else 1 * 10 ** 5
+LEARNING_RATE = float(args.lr) if args.lr != None else 5e-4
 GPU = args.gpu if args.gpu != None else False
 PATH = args.path
 PLT_SHOW = args.plt_show if args.plt_show != None else False
@@ -49,6 +52,9 @@ if GPU == True:
     device = "/gpu:0"
 else:
     device = "/cpu:0"
+
+def schedule(epsilon, step):
+    return 1 - (step/sum(range(EPISODES+1)))**2
 
 class Agent:
     "Neural Network agent in tensorflow"
@@ -193,6 +199,16 @@ def plot_stats(stats):
     plt.ylabel("Loss")
     plt.title("Loss per step")
 
+    if PATH != None:
+        if not os.path.exists(PATH):
+            os.makedirs(PATH)
+        fig1.savefig(PATH + "/loss.png")
+    else:
+        fig1.savefig('loss.png')
+
+    if PLT_SHOW:
+        plt.show(fig1)
+
     # Plot successes in in-between tests
     fig2 = plt.figure(figsize=(10,10))
     plt.plot(stats.val_success)
@@ -200,6 +216,13 @@ def plot_stats(stats):
     plt.ylabel("Success (yes/no)")
     plt.title("Successes in intermediate testing")
 
+    if PATH != None:
+        fig2.savefig(PATH + "/inter_tests.png")
+    else:
+        fig1.savefig('inter_tests.png')
+
+    if PLT_SHOW:
+        plt.show(fig2)
     # Plot test steps
     fig3 = plt.figure(figsize=(10,10))
     plt.plot(stats.tests)
@@ -208,20 +231,11 @@ def plot_stats(stats):
     plt.title("Steps per test")
 
     if PATH != None:
-        if not os.path.exists(PATH):
-            os.makedirs(PATH)
-
-        fig1.savefig(PATH + "/loss.png")
-        fig2.savefig(PATH + "/inter_tests.png")
         fig3.savefig(PATH + "/test_steps.png")
     else:
-        fig1.savefig('loss.png')
-        fig1.savefig('inter_tests.png')
         fig1.savefig('test_steps.png')
 
     if PLT_SHOW:
-        plt.show(fig1)
-        plt.show(fig2)
         plt.show(fig3)
 
 
@@ -230,11 +244,7 @@ opt = Options()
 sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
 test_sim = Simulator(opt.map_ind, opt.cub_siz, opt.pob_siz, opt.act_num)
 # setup a large transitiontable that is filled during training
-# It will save the last third of the total number of episodes
-# This is a relatively small number and might be increased to a more complete representation of possible transitions
-# The reason it's relatively small here is that we prioritize large errors anyway and don't want to train on the same ones the whole time
-# This could be considered a hyperparameter that needs to be tuned
-maxlen = int(EPISODES)
+maxlen = EPISODES
 trans = TransitionTable(opt.state_siz, opt.act_num, opt.hist_len,
                         opt.minibatch_size, maxlen)
 agent = Agent(opt)
@@ -248,27 +258,31 @@ if opt.disp_on:
     win_all = None
     win_pob = None
 
-steps = int(EPISODES)
+steps = EPISODES
 epi_step = 0
 nepisodes = 0
 stats = Statistics(loss = np.zeros(steps), val_success = np.zeros(steps //250), tests = np.ones(500)*100)
+epsilon = EPSILON
+n = MSRN
 
 state = sim.newGame(opt.tgt_y, opt.tgt_x)
 state_with_history = np.zeros((opt.hist_len, opt.state_siz))
 append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
 next_state_with_history = np.copy(state_with_history)
-n_step_return = np.zeros(opt.early_stop)
-save_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
-save_next_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
-save_actions = np.zeros((opt.early_stop, opt.act_num))
-save_terminals = np.zeros_like(n_step_return)
+# Saving transitions for the multi-step return
+# Could be optimized, currently it just saves the whole episode
+n_step_returns = np.zeros(opt.early_stop)
+msr_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+msr_next_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+msr_actions = np.zeros((opt.early_stop, opt.act_num))
+msr_terminals = np.zeros_like(n_step_returns)
 
 for step in range(steps):
     if state.terminal or epi_step >= opt.early_stop:
-        # add to the transition table
-        for i in range(epi_step +1):
+        # add last states to the transition table
+        for i in range(n):
             #sum backwards
-            trans.add(save_states[i], save_actions[i], save_next_states[i], n_step_return[i:i+3].sum(), save_terminals[i])
+            trans.add(msr_states[epi_step-n], save_actions[epi_step-n], save_next_states[epi_step-n], n_step_returns[epi_step-n:epi_step].sum(), save_terminals[epi_step-n])
         #reset
         epi_step = 0
         nepisodes += 1
@@ -279,25 +293,36 @@ for step in range(steps):
         append_to_hist(state_with_history, rgb2gray(state.pob).reshape(opt.state_siz))
         next_state_with_history = np.copy(state_with_history)
         # Start with returns of 0 and empty sets
-        n_step_return = np.zeros(opt.early_stop)
-        save_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
-        save_next_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
-        save_actions = np.zeros((opt.early_stop, opt.act_num))
-        save_terminals = np.zeros_like(n_step_return)
+        n_step_returns = np.zeros(opt.early_stop)
+        msr_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+        msr_next_states = np.zeros((opt.early_stop, opt.hist_len*opt.state_siz))
+        msr_actions = np.zeros((opt.early_stop, opt.act_num))
+        msr_terminals = np.zeros_like(n_step_returns)
 
-    # Take best action
-    action = np.argmax(agent.predict(sess, np.reshape(state_with_history, (900, 4))[np.newaxis, ..., np.newaxis]))
+    # Take best action or choose greedily
+    if NOISY == True:
+        action = np.argmax(agent.predict(sess, np.reshape(state_with_history, (900, 4))[np.newaxis, ..., np.newaxis]))
+    else:
+        epsilon = schedule(epsilon, step)
+        if np.random.randint(0, 1) > epsilon:
+            action = randrange(opt.act_num)
+        else:
+            action = np.argmax(agent.predict(sess, np.reshape(state_with_history, (900, 4))[np.newaxis, ..., np.newaxis]))
+
     action_onehot = trans.one_hot_action(action)
     next_state = sim.step(action)
     # Update reward
-    n_step_return[epi_step] = next_state.reward
+    n_step_returns[epi_step] = next_state.reward
     # append to history
     append_to_hist(next_state_with_history, rgb2gray(next_state.pob).reshape(opt.state_siz))
-    # Save transition
-    save_states[epi_step] = state_with_history.reshape(-1)
-    save_next_states[epi_step] = next_state_with_history.reshape(-1)
-    save_actions[epi_step] = action_onehot
-    save_terminals[epi_step] = next_state.terminal
+    # Save transitions for the multistep rewards
+    msr_states[epi_step] = state_with_history.reshape(-1)
+    msr_next_states[epi_step] = next_state_with_history.reshape(-1)
+    msr_actions[epi_step] = action_onehot
+    msr_terminals[epi_step] = next_state.terminal
+    # Add past state to the replay
+    if epi_step >= n:
+        trans.add(msr_states[epi_step-n], msr_actions[epi_step-n], msr_next_states[i], n_step_returns[epi_step-n:epi_step].sum(), save_terminals[epi_step-n])
     # mark next state as current state
     state_with_history = np.copy(next_state_with_history)
     state = next_state
@@ -317,7 +342,7 @@ for step in range(steps):
             next_state = np.reshape(batch[i].next_state, (900, 4))[np.newaxis, ..., np.newaxis]
             targets[i] = batch[i].reward + DISCOUNT_FACTOR * target.predict(sess, next_state)[0][0][np.argmax(agent.predict(sess, next_state))] * (1. - batch[i].terminal)
 
-            # Shape & check it actions are one-hotted
+            # Shape & check if actions are one-hotted
             states[i] = np.reshape(batch[i].state, (900, 4, 1))
             if len(action.shape) > 1: #not np.array_equal([1, opt.act_num], batch[i].action.shape):
                 action_batch[i] = trans.one_hot_action(batch[i].action)
